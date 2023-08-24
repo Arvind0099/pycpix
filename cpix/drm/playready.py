@@ -73,7 +73,7 @@ def generate_content_key(key_id, key_seed):
     return b16encode(content_key)
 
 
-def checksum(kid, cek):
+def checksum(key_id, key):
     """
     Generate playready key checksum
 
@@ -84,54 +84,38 @@ def checksum(kid, cek):
     16-byte AES content key using ECB mode. The first 8 bytes of the buffer is
     extracted and base64 encoded.
     """
-    if isinstance(kid, str):
-        kid = uuid.UUID(kid)
-    elif isinstance(kid, bytes):
-        kid = uuid.UUID(bytes=kid)
+    if isinstance(key_id, str):
+        key_id = uuid.UUID(key_id)
+    elif isinstance(key_id, bytes):
+        key_id = uuid.UUID(bytes=key_id)
     
-    cipher = AES.new(bytes.fromhex(cek), AES.MODE_ECB)
-    ciphertext = cipher.encrypt(kid.bytes_le)
+    cipher = AES.new(bytes.fromhex(key), AES.MODE_ECB)
+    ciphertext = cipher.encrypt(key_id.bytes_le)
 
     return b64encode(ciphertext[:8])
 
 
-def generate_wrmheader(keys, url, algorithm="AESCTR", use_checksum=True):
+def generate_wrmheader(key):
     """
     Generate Playready header 4.2 or 4.3 depending on the encryption algorithm
     specified
     """
-    if algorithm not in ["AESCTR", "AESCBC"]:
-        raise ValueError("algorithm must be AESCTR or AESCBC")
+    if isinstance(key["key_id"], str):
+        key["key_id"] = uuid.UUID(key["key_id"])
+    elif isinstance(key["key_id"], bytes):
+        key["key_id"] = uuid.UUID(str(key["key_id"], "ASCII"))
 
-    wrmheader = etree.Element(
-        "WRMHEADER",
-        nsmap={
-            None: "http://schemas.microsoft.com/DRM/2007/03/PlayReadyHeader"})
-
-    if algorithm == "AESCBC":
-        wrmheader.set("version", "4.3.0.0")
-    else:
-        wrmheader.set("version", "4.2.0.0")
-
-    data = etree.SubElement(wrmheader, "DATA")
-    protect_info = etree.SubElement(data, "PROTECTINFO")
-    kids = etree.SubElement(protect_info, "KIDS")
-
-    for key in keys:
-        if isinstance(key["key_id"], str):
-            key["key_id"] = uuid.UUID(key["key_id"])
-        elif isinstance(key["key_id"], bytes):
-            key["key_id"] = uuid.UUID(str(key["key_id"], "ASCII"))
-        kid = etree.Element("KID")
-        kid.set("ALGID", algorithm)
-        if algorithm == "AESCTR" and use_checksum:
-            kid.set("CHECKSUM", checksum(key["key_id"], key["key"]))
-        kid.set("VALUE", b64encode(key["key_id"].bytes_le))
-        kid.text = ""
-        kids.append(kid)
-
-    la_url = etree.SubElement(data, "LA_URL")
-    la_url.text = url
+    wrmheader = etree.Element("WRMHEADER", xmlns="http://schemas.microsoft.com/DRM/2007/03/PlayReadyHeader", version="4.0.0.0")
+    data_element = etree.SubElement(wrmheader, "DATA")
+    protect_info_element = etree.SubElement(data_element, "PROTECTINFO")
+    keylen_element = etree.SubElement(protect_info_element, "KEYLEN")
+    keylen_element.text = "16"
+    algid_element = etree.SubElement(protect_info_element, "ALGID")
+    algid_element.text = "AESCTR"
+    kid_element = etree.SubElement(data_element, "KID")
+    kid_element.text = b64encode(key["key_id"].bytes_le)
+    checksum_element = etree.SubElement(data_element, "CHECKSUM")
+    checksum_element.text = checksum(**key).decode()
 
     return etree.tostring(wrmheader, encoding="utf-16le",
                           xml_declaration=False)
@@ -148,17 +132,19 @@ def generate_playready_object(wrmheader):
             wrmheader)                                      # wrmheader
 
 
-def generate_pssh(keys, url, algorithm="AESCTR", use_checksum=True, version=1):
+def generate_pssh(key):
     """
     Generate a PSSH box including Playready header
 
     Defaults to version 1 with key IDs listed
     """
-    wrmheader = generate_wrmheader(keys, url, algorithm, use_checksum)
+    wrmheader = generate_wrmheader(key)
     pro = generate_playready_object(wrmheader)
 
-    return pssh_box.build({
-        "version": version,
-        "key_ids": [key["key_id"].bytes for key in keys],
+    pssh = pssh_box.build({
+        "version": 0,
+        "key_ids": [key["key_id"].bytes],
         "data": pro
     })
+
+    return b64encode(pssh).decode(), b64encode(pro).decode()
