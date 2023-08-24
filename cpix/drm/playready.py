@@ -87,8 +87,9 @@ def checksum(kid, cek):
     if isinstance(kid, str):
         kid = uuid.UUID(kid)
     elif isinstance(kid, bytes):
-        kid = uuid.UUID(str(kid, "ASCII"))
-    cipher = AES.new(b16decode(cek), AES.MODE_ECB)
+        kid = uuid.UUID(bytes=kid)
+    
+    cipher = AES.new(bytes.fromhex(cek), AES.MODE_ECB)
     ciphertext = cipher.encrypt(kid.bytes_le)
 
     return b64encode(ciphertext[:8])
